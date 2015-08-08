@@ -1,0 +1,12 @@
+{application, gebot,
+ [
+  {description, ""},
+  {vsn, "1"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, { gebot_app, []}},
+  {env, []}
+ ]}.
