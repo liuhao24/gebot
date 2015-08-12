@@ -40,10 +40,10 @@ handle_call(_Req, _From, State) ->
 handle_cast({schedule}, State) ->
     %% Tasks = [{<<"11">>, <<"22">>}, {<<"xx">>, <<"yy">>}],
     Tasks = gebot_mongo:get_weibo_binding(),
-    Iter = fun({Channel, Tokens}) -> 
-           case gebot_weibo_task:start_link({sleeper, 1000*60}, Tokens, Channel) of
+    Iter = fun({Id, Channel, Tokens}) -> 
+           case gebot_weibo_task:start_link({sleeper, 1000*60}, Id, Tokens, Channel) of
 	          {ok, Pid} ->
-           	      TaskList = [{Pid, {Tokens, Channel}}|State#state.tasks],
+           	      TaskList = [{Pid, {Id, Tokens, Channel}}|State#state.tasks],
                       State#state{tasks = TaskList};
                   {error, Reason} ->
                       ok

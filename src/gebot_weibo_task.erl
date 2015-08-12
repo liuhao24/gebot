@@ -2,7 +2,7 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/3, stop/1]).
+-export([start_link/4, stop/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -18,8 +18,8 @@
 	}).
 
 
-start_link(Schedule, Tokens, Channel) ->
-    gen_server:start_link(?MODULE, [{Schedule, Tokens, Channel}], []).
+start_link(Schedule, Id, Tokens, Channel) ->
+    gen_server:start_link(?MODULE, [{Schedule, Id, Tokens, Channel}], []).
     
 stop(Pid) ->
     gen_server:cast(Pid, stop).
@@ -27,17 +27,17 @@ stop(Pid) ->
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
-init([{Schedule, Tokens, Channel}]) ->
+init([{Schedule, Id, Tokens, Channel}]) ->
     Self = self(),
     SinceId = gebot_mongo:get_since_id(Channel, Tokens),
     {ok, XmppNode} = application:get_env(gebot, xmpp_node),
     {ok, XmppServer} = application:get_env(gebot, xmpp_server),
     Pid = spawn_link(fun() -> 
-    	  		   run_task(Schedule, Tokens, Channel, XmppNode, XmppServer, Self)
+    	  		   run_task(Schedule, Id, Tokens, Channel, XmppNode, XmppServer, Self)
 			   end),
     {ok, #state{task_pid = Pid, since_id = SinceId, xmpp_server= XmppServer, xmpp_node = XmppNode}}.
 
-run_task({sleeper, Millis}, Tokens, Channel, XmppNode, XmppServer, ParentPid) ->
+run_task({sleeper, Millis}, Id, Tokens, Channel, XmppNode, XmppServer, ParentPid) ->
     %% apply_task(Exec),
     {Header, HttpOption, RequestOption} = get_http_option(),
     SinceId = gen_server:call(ParentPid, sinceid),
@@ -63,17 +63,25 @@ run_task({sleeper, Millis}, Tokens, Channel, XmppNode, XmppServer, ParentPid) ->
 					{_, Since} = lists:keyfind(<<"since_id">>, 1, Data),
 
 					{_, Statuses} = lists:keyfind(<<"statuses">>, 1, Data),
-					Acc1 = lists:foldl(fun({Msg0}, Acc0) ->
-								   {_, Text} = lists:keyfind(<<"text">>, 1, Msg0),
-								   {_, {User}} = lists:keyfind(<<"user">>, 1, Msg0),
-								   {_, AuthorName} = lists:keyfind(<<"name">>, 1, User),
-								   {_, AuthorLink} = lists:keyfind(<<"domain">>, 1, User),
-								   [{Channel, Text, AuthorName, AuthorLink} | Acc0]
-							   end, [], Statuses),
-					gebot_mongo:save_weibo_msg(Acc1),
+					%% Acc1 = lists:foldl(fun({Msg0}, Acc0) ->
+					%% 			   {_, Text} = lists:keyfind(<<"text">>, 1, Msg0),
+					%% 			   {_, CreatedAt} = lists:keyfind(<<"created_at">>, 1, Msg0),
+					%% 			   {_, Pics} = lists:keyfind(<<"pic_urls">>, 1, Msg0),
+					%% 			   Pics0 = lists:foldl(fun({Pic}, PicAcc0) ->
+					%% 						      {_, PicUrl} = lists:keyfind(<<"thumbnail_pic">>, 1, Pic), 
+					%% 						      [PicUrl | PicAcc0]
+					%% 					      end, [], Pics),
+					%% 			   io:format("pics is: ~p ~n", [Pics0]),
+					%% 			   {_, {User}} = lists:keyfind(<<"user">>, 1, Msg0),
+					%% 			   {_, AuthorName} = lists:keyfind(<<"name">>, 1, User),
+					%% 			   {_, AuthorLink} = lists:keyfind(<<"domain">>, 1, User),
+					%% 			   [{Id, Channel, Text, AuthorName, AuthorLink, CreatedAt, Pics0} | Acc0]
+					%% 		   end, [], Statuses),
+					Acc1 = parse_statuses(Statuses, []),
+					gebot_mongo:save_weibo_msg(Id, Channel, Acc1),
 					case Since of
 					    Since0 when Since > 0 ->
-						Args = [{new_weibo, Channel, <<"weibo">>, length(Acc1)}, 
+						Args = [{new_weibo, Channel, Id, length(Acc1)}, 
 							list_to_binary(XmppServer)],
 						io:format("rpc node: ~p , args is : ~p ~n", [XmppNode,Args]),
 						rpc:call(XmppNode, cobber_channel, pub_event, Args),
@@ -99,9 +107,46 @@ run_task({sleeper, Millis}, Tokens, Channel, XmppNode, XmppServer, ParentPid) ->
     end,
 
     sleep_accounting_for_max(Millis),
-    run_task({sleeper, Millis}, Tokens, Channel,XmppNode, XmppServer, ParentPid);
-run_task(_Schedule, _Tokens, _Channel, _, _, _ParentPid) ->
+    run_task({sleeper, Millis}, Id, Tokens, Channel,XmppNode, XmppServer, ParentPid);
+run_task(_Schedule,_Id,  _Tokens, _Channel, _, _, _ParentPid) ->
     ok.
+
+parse_statuses([], Acc) ->
+    Acc;
+parse_statuses([Status | Rest], Acc) ->
+    Acc0 = [parse_status(Status) | Acc],
+    parse_statuses(Rest, Acc0).
+
+parse_status({Msg0}) ->
+    {_, Text} = lists:keyfind(<<"text">>, 1, Msg0),
+    {_, CreatedAt} = lists:keyfind(<<"created_at">>, 1, Msg0),
+    Pics0 = case lists:keyfind(<<"pic_urls">>, 1, Msg0) of
+	       {ok, Pics} ->
+		   lists:foldl(fun({Pic}, PicAcc0) ->
+				       {_, PicUrl} = lists:keyfind(<<"thumbnail_pic">>, 1, Pic), 
+				       [PicUrl | PicAcc0]
+			       end, [], Pics);
+		_ -> []
+	    end,
+    {_, {User}} = lists:keyfind(<<"user">>, 1, Msg0),
+    {_, AuthorName} = lists:keyfind(<<"name">>, 1, User),
+    {_, AuthorLink} = lists:keyfind(<<"profile_url">>, 1, User),
+    io:format("msg0 : ~p ~n", [Msg0]),
+    Retweet = case lists:keyfind(<<"retweeted_status">>, 1, Msg0) of
+		  {<<"retweeted_status">>, RetweetStatus} ->
+		      parse_sub_status(RetweetStatus);
+		  _ -> {}
+	      end,
+    {Text, AuthorName, AuthorLink, CreatedAt, Pics0, Retweet}.    
+
+parse_sub_status({Msg0}) ->
+    {_, Text} = lists:keyfind(<<"text">>, 1, Msg0),
+    {_, CreatedAt} = lists:keyfind(<<"created_at">>, 1, Msg0),
+    {_, {User}} = lists:keyfind(<<"user">>, 1, Msg0),
+    {_, AuthorName} = lists:keyfind(<<"name">>, 1, User),
+    {_, AuthorLink} = lists:keyfind(<<"profile_url">>, 1, User),
+    {text, Text, author_name, AuthorName, author_link, AuthorLink, created_at, CreatedAt}.    
+
 
 get_http_option() ->
     %% ---------------------------------------------------------

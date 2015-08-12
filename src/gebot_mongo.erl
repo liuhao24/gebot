@@ -9,7 +9,7 @@
 	 objectid_to_binary/1,
 	 binary_to_objectid/1, 
 	 get_weibo_binding/0,
-	 save_weibo_msg/1,
+	 save_weibo_msg/3,
 	 get_since_id/2,
 	 set_since_id/3
 	]).
@@ -70,11 +70,11 @@ start() ->
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
-save_weibo_msg(Docs) ->
-    Acc1 = lists:foldl(fun({Cid, Content, AuthorName, AuthorLink}, Acc0) ->
+save_weibo_msg(Id, Cid, Docs) ->
+    Acc1 = lists:foldl(fun({Content, AuthorName, AuthorLink, CreatedAt, Pics, Retweet}, Acc0) ->
 			       Ts = get_now_utc(),
 			       Doc = {
-				 ?FIELD_USER, <<"weibo">>,
+				 ?FIELD_USER, Id,
 				 ?FIELD_TYPE, <<"weibo">>,
 				 ?FIELD_CHANNEL, Cid,
 				 ?FIELD_TEXT, <<"">>,
@@ -84,7 +84,10 @@ save_weibo_msg(Docs) ->
 				   color, <<"#36a64f">>,
 				   author_name, AuthorName, 
 				   author_link, AuthorLink,
-				   text, Content
+				   text, Content,
+				   created_at, CreatedAt,
+				   pics, Pics,
+				   retweet, Retweet
 				  }
 				},
 			       [Doc | Acc0]
@@ -160,16 +163,17 @@ get_mongo_pwd() ->
     end.
 
 get_weibo_binding() ->
-    Docs = mongo_pool:find(?MONGOPOOL, ?COLL_BINDING, {'app', <<"weibo">>, 'status', 0}, {'cid', 1, 'token', 1}),
+    Docs = mongo_pool:find(?MONGOPOOL, ?COLL_BINDING, {'app', <<"weibo">>, 'status', 0}, {'_id', 1, 'cid', 1, 'token', 1}),
     case Docs of
 	false -> [];
 	none -> [];
 	Cursor ->
 	    Rs = take(Cursor, ?MAX, desc),
 	    Result = lists:foldl(fun(X, Acc) ->
+					 Id = bson:lookup('_id', X, <<"">>),
 					 Channel = bson:lookup(cid, X, <<"">>),
 					 Token = bson:lookup(token, X, <<"">>),
-					 [{Channel, Token} | Acc] end, [], Rs)
+					 [{objectid_to_binary(Id), Channel, Token} | Acc] end, [], Rs)
     end.
 
 get_since_id(Channel, Token) ->
@@ -215,7 +219,7 @@ iolist_to_list(IOList) ->
 objectid_to_binary({Id}) -> objectid_to_binary(Id, []).
 
 objectid_to_binary(<<>>, Result) ->
-    jlib:tolower(list_to_binary(lists:reverse(Result)));
+    tolower(list_to_binary(lists:reverse(Result)));
 objectid_to_binary(<<Hex:8, Bin/binary>>, Result) ->
     SL1 = erlang:integer_to_list(Hex, 16),
     SL2 = case erlang:length(SL1) of
@@ -231,4 +235,12 @@ binary_to_objectid(<<>>, Result) ->
 binary_to_objectid(<<BS:2/binary, Bin/binary>>, Result) ->
     binary_to_objectid(Bin, [erlang:binary_to_integer(BS, 16)|Result]).
 
+tolower(B) ->
+    iolist_to_binary(tolower_s(binary_to_list(B))).
+
+tolower_s([C | Cs]) ->
+    if C >= $A, C =< $Z -> [C + 32 | tolower_s(Cs)];
+       true -> [C | tolower_s(Cs)]
+    end;
+tolower_s([]) -> [].
 
